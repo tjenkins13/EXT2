@@ -1,0 +1,9 @@
+#include <stdio.h>
+
+int main(){
+  int num =0;
+
+  void *ptr=&num;
+
+  printf("%d\n",sizeof(&ptr));
+}

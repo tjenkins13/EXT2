@@ -1,0 +1,658 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <time.h>
+#include <grp.h>
+#include <pwd.h>
+
+//-- file format --
+#define EXT2_S_IFSOCK   0xC000  //socket
+#define EXT2_S_IFLNK    0xA000  //symbolic link
+#define EXT2_S_IFREG    0x8000  //regular file
+#define EXT2_S_IFBLK    0x6000  //block device
+#define EXT2_S_IFDIR    0x4000  //directory
+#define EXT2_S_IFCHR    0x2000  //character device
+#define EXT2_S_IFIFO    0x1000  //fifo
+//--process execution user/group override --
+#define EXT2_S_ISUID    0x0800  //Set process User ID
+#define EXT2_S_ISGID    0x0400  //Set process Group ID
+#define EXT2_S_ISVTX    0x0200  //sticky bit
+//-- access rights --
+#define EXT2_S_IRUSR    0x0100  //user read
+#define EXT2_S_IWUSR    0x0080  //user write
+#define EXT2_S_IXUSR    0x0040  //user execute
+#define EXT2_S_IRGRP    0x0020  //group read
+#define EXT2_S_IWGRP    0x0010  //group write
+#define EXT2_S_IXGRP    0x0008  //group execute
+#define EXT2_S_IROTH    0x0004  //others read
+#define EXT2_S_IWOTH    0x0002  //others write
+#define EXT2_S_IXOTH    0x0001  //others execute
+
+#define K 1024
+
+#define ANSI_COLOR_GREEN   "\x1b[01;32m"     //green for executables in ls
+#define ANSI_COLOR_BLUE    "\x1b[01;34m"     //blue for directories in ls
+#define ANSI_COLOR_RESET   "\x1b[0m"         //get color back to normal
+
+typedef struct __attribute__((packed)) {
+  unsigned int        s_inodes_count;       
+  unsigned int        s_blocks_count;       
+  unsigned int        s_r_blocks_count;     
+  unsigned int        s_free_blocks_count;  
+  unsigned int        s_free_inodes_count;  
+  unsigned int        s_first_data_block; 
+  unsigned int        s_log_block_size;   
+  unsigned int        s_log_frag_size;
+  unsigned int        s_blocks_per_group;
+  unsigned int        s_frags_per_group;
+  unsigned int        s_inodes_per_group;
+  unsigned int        s_mtime;
+  unsigned int        s_wtime;
+  unsigned short      s_mnt_count;
+  unsigned short      s_max_mnt_count;
+  unsigned short      s_magic;
+  unsigned short      s_state;
+  unsigned short      s_errors;
+  unsigned short      s_minor_rev_level;
+  unsigned int        s_lastcheck;
+  unsigned int        s_checkinterval;
+  unsigned int        s_creator_os;
+  unsigned int        s_rev_level;
+  unsigned short      s_def_resuid;
+  unsigned short      s_def_resgid;
+  unsigned int        s_first_ino;
+  unsigned short      s_inode_size;
+  unsigned short      s_block_group_nr;
+  unsigned int        s_feature_compat;
+  unsigned int        s_feature_incompat;
+  unsigned int        s_feature_ro_compat;
+  char                s_uuid[16];
+  char                s_volume_name[16];
+  char                s_last_mounted[64];
+  char                unused[824];
+}SUPERBLOCK;
+
+typedef struct __attribute__((packed)) {
+  unsigned int bg_block_bitmap;
+  unsigned int bg_inode_bitmap;
+  unsigned int bg_inode_table;
+  unsigned short bg_free_blocks_count;
+  unsigned short bg_free_inodes_count;
+  unsigned short bg_used_dirs_count;
+  unsigned short bg_pad;
+  unsigned char bg_reserved[12];
+  char unused[992];
+} BGDT;
+
+typedef struct __attribute__((packed)) {
+  unsigned short i_mode;
+  unsigned short i_uid;
+  unsigned int i_size;
+  unsigned int i_atime;
+  unsigned int i_ctime;
+  unsigned int i_mtime;
+  unsigned int i_dtime;
+  unsigned short i_gid;
+  unsigned short i_links_count;
+  unsigned int i_blocks;
+  unsigned int i_flags;
+  unsigned int _i_osd1;
+  unsigned int i_block[15];
+  unsigned int i_generation;
+  unsigned int i_file_acl;
+  unsigned int i_dir_acl;
+  unsigned int i_faddr;
+  unsigned char i_osd2[12]; //don't feel like using i_osd2 struct
+} INODE;
+
+typedef struct __attribute__((packed)) {
+  unsigned int inode;
+  unsigned short rec_len;
+  unsigned char name_len;
+  unsigned char file_type;
+  unsigned char name[255];
+} DIR_STRUCT;
+
+typedef struct openstruct{
+  int fd;                  //file descriptor
+  SUPERBLOCK sb;           //superblock
+  BGDT bg;                 //block group descriptor table
+  unsigned int ino_index;  //index of inode-need for writing
+  INODE inode;
+  int offset;              //offset in file
+  int blin;
+  int blocks[4];
+  int block;
+}OPEN_STRUCT;
+
+OPEN_STRUCT fdar[10];
+
+char *months[12]={"Jan",
+		  "Feb",
+		  "Mar",
+		  "Apr",
+		  "May",
+		  "Jun",
+		  "Jul",
+		  "Aug",
+		  "Sep",
+		  "Oct",
+		  "Nov",
+		  "Dec"};
+
+void printmode(INODE in){
+
+  if((in.i_mode & EXT2_S_IFDIR)>0)
+    printf("d");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IRUSR)>0)
+    printf("r");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IWUSR)>0)
+    printf("w");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IXUSR)>0)
+    printf("x");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IRGRP)>0)
+    printf("r");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IWGRP)>0)
+    printf("w");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IXGRP)>0)
+    printf("x");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IROTH)>0)
+    printf("r");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IWOTH)>0)
+    printf("w");
+  else
+    printf("-");
+  if((in.i_mode & EXT2_S_IXOTH)>0)
+    printf("x");
+  else
+    printf("-");
+}
+
+void printdate(INODE in){
+  struct tm *tp;
+  time_t t=(time_t)in.i_atime;
+  tp=localtime(&t);
+
+  printf("%s %2d %2d:%02d",months[tp->tm_mon],tp->tm_mday,tp->tm_hour,tp->tm_min);
+    
+}
+
+unsigned int findblock(int fd,INODE in,int *block){
+  unsigned int inblock[K/4];
+  
+  if(block[0]<=11){//direct block
+    block[0]++;
+    return in.i_block[block[0]-1];
+  }
+
+  /*if(block[0]==11){ //first time in indirect block
+    block[0]++;
+    lseek(fd,in.i_block[block[0]]*K,SEEK_SET);
+    read(fd,&inblock,K/4*sizeof(int));
+    return inblock[0];
+    }*/
+  if(block[0]==12){ //in indirect block
+    if(block[1]==((K/4)-1)){ //ready to go to first doubly indirect block
+      block[1]=-1;
+      block[2]=-1;
+      block[0]++;
+    }
+    else{
+      block[1]++;
+      lseek(fd,in.i_block[block[0]]*K,SEEK_SET);
+      read(fd,&inblock,K/4*sizeof(int));
+      return inblock[block[1]-1];
+    }
+    
+  }
+
+  if(block[0]==13){ //doubly indirect block
+    if(block[1]==((K/4)-1) && block[2]==((K/4)-1)){
+      block[0]++;
+      block[1]=-1;
+      block[2]=-1;
+      block[3]=-1;
+      printf("Need triply indirect block\n");
+    }
+    else{
+      if(block[2]==((K/4)-1)){
+	block[2]=0;
+	block[1]++;
+      }
+      else
+	block[2]++;
+      lseek(fd,K*in.i_block[block[0]],SEEK_SET);
+      read(fd,&inblock,K/4*sizeof(int));
+      lseek(fd,K*inblock[block[1]],SEEK_SET);
+      read(fd,&inblock,K/4*sizeof(int));
+      return inblock[block[2]];      
+    }
+  }
+  if(block[0]==14){
+    if(block[1]==((K/4)-1) && block[2]==((K/4)-1) && block[3]==((K/4)-1)){
+      printf("Too much memory used\n");
+      return 0;
+    }
+    if(block[3]==((K/4)-1)){
+      block[3]=0;
+      if(block[2]==((K/4)-1)){
+	block[2]=0;
+	if(block[1]==((K/4)-1)){
+	  printf("Too much memory used\n");
+	  return 0;
+	}
+	else
+	  block[1]++;
+      }
+      else
+	block[2]++;
+    }
+    else
+      block[3]++;
+    lseek(fd,K*in.i_block[block[0]],SEEK_SET);
+    read(fd,&inblock,K/4*sizeof(int));
+    lseek(fd,K*inblock[block[1]],SEEK_SET);
+    read(fd,&inblock,K/4*sizeof(int));
+    lseek(fd,K*inblock[block[2]],SEEK_SET);
+    read(fd,&inblock,K/4*sizeof(int));
+    return inblock[block[3]];          
+      }
+  return 0;
+  
+}
+
+void myls(int fd,DIR_STRUCT dir,INODE in){
+  printf("%2d ",dir.inode);
+  printmode(in);
+  printf(" %2d %5s %5s %5d ",in.i_links_count,
+	 getpwuid((uid_t)in.i_uid)->pw_name,
+	 getgrgid((gid_t)in.i_gid)->gr_name,
+	 in.i_size);
+
+  printdate(in);
+  if(in.i_mode & EXT2_S_IFDIR)
+    printf(ANSI_COLOR_BLUE " %s" ANSI_COLOR_RESET "/\n",dir.name); //https://stackoverflow.com/questions/3219393/stdlib-and-colored-output-in-c                                                                                                                       
+  else{
+    printf(" %s\n",dir.name);
+  }
+
+}
+
+void print_ino(int fd,INODE in,int block_size){
+  int pos=0;
+  int blocks[4]={0,0,0,0};
+  int block=findblock(fd,in,blocks);
+  unsigned char c=1;
+  int bread=0;
+  lseek(fd,block * block_size,SEEK_SET);
+  while(bread<=in.i_size && c){
+    read(fd,&c,1);
+    pos++;
+    //bread++;
+    //printf("%c",c);
+    if(pos>=block_size){
+      block=findblock(fd,in,blocks);
+      lseek(fd,block*block_size,SEEK_SET);
+      pos=0;
+    }
+  }
+
+}
+
+void myls2(int fd,INODE root,int block_size,SUPERBLOCK sb,BGDT bg){
+  DIR_STRUCT dir;
+  int pos;
+  int block;
+  int blocks[4]={0,0,0,0};
+  int rv=0;
+  INODE in;
+  
+  dir.inode=1;
+  pos=0;
+  block=findblock(fd,root,blocks);
+
+  while(dir.inode){
+    lseek(fd,(block_size*block)+pos,SEEK_SET);
+    rv=read(fd,&dir,sizeof(DIR_STRUCT)-255);
+    if(rv!=(sizeof(DIR_STRUCT)-255)){
+      fprintf(stderr,"Bad directory entry read\n");
+      exit(0);
+    }
+    read(fd,&dir.name,dir.name_len);
+    dir.name[dir.name_len]=0;
+    pos+=dir.rec_len;
+
+    if(dir.inode!=0){
+      lseek(fd,(block_size*bg.bg_inode_table)+(sb.s_inode_size*(dir.inode-1)),SEEK_SET);
+      rv=read(fd,&in,sizeof(INODE));
+      if(rv!=sizeof(INODE)){
+	fprintf(stderr,"Bad inode read\n");
+	exit(0);
+      }
+      myls(fd,dir,in);
+
+    }
+    if(pos>=block_size){
+      pos=0;
+      block=findblock(fd,root,blocks);
+    }
+  }
+  return;
+}
+
+unsigned int search(int fd,INODE root,int block_size,SUPERBLOCK sb,BGDT bg,char *fname){
+  DIR_STRUCT dir;
+  int pos;
+  int block;
+  int blocks[4]={0,0,0,0};
+  int rv=0;
+  INODE in;
+  
+  dir.inode=1;
+  pos=0;
+  block=findblock(fd,root,blocks);
+
+  while(dir.inode){
+    lseek(fd,(block_size*block)+pos,SEEK_SET);
+    rv=read(fd,&dir,sizeof(DIR_STRUCT)-255);
+    if(rv!=(sizeof(DIR_STRUCT)-255)){
+      fprintf(stderr,"Bad directory entry read\n");
+      exit(0);
+    }
+    read(fd,&dir.name,dir.name_len);
+    dir.name[dir.name_len]=0;
+    pos+=dir.rec_len;
+
+    if(dir.inode!=0){
+      lseek(fd,(block_size*bg.bg_inode_table)+(sb.s_inode_size*(dir.inode-1)),SEEK_SET);
+      rv=read(fd,&in,sizeof(INODE));
+      if(rv!=sizeof(INODE)){
+	fprintf(stderr,"Bad inode read\n");
+	exit(0);
+      }
+      //myls(fd,dir,in);
+      if(strncmp(fname,dir.name,strlen(fname))==0)
+	return dir.inode-1;
+    }
+    if(pos>=block_size){
+      pos=0;
+      block=findblock(fd,root,blocks);
+    }
+  }
+  return 0;
+}
+
+int split(char *fname,char *pieces){
+  int i=0;
+  char a[K];
+
+  for(i=1;(i<strlen(fname)) && fname[i]!='/';i++);
+
+  strncpy(pieces,fname,i);
+  pieces[i]=0;
+  //fname+=i;
+  if(fname[i]=='/')
+    return i+1;
+  return -1;
+  printf("%s %s\n",fname,pieces);
+
+  printf("%d\n",i);
+}
+
+int myopen(int fd, char *fname,INODE root,int rw,int per,int block_size,SUPERBLOCK sb,BGDT bg){//find file with already opened filesystem
+  DIR_STRUCT dir;
+  INODE in=root;
+  //  INODE f;
+  int disp,rv;
+  char pieces[K];
+  unsigned int inloc=0;
+  char fcpy[K];
+  strcpy(fcpy,fname);//copy filename
+  //  f.i_mode=f.i_size=0;  
+  if(rw==0){ //want to read
+    if(!(root.i_mode & EXT2_S_IFDIR)){//directory given not directory
+      fprintf(stderr,"Inode given not directory\n");
+      return -1;
+    }
+  
+    while(fname && pieces){
+      disp=split(fname,pieces);
+      fname+=disp;
+      if(disp<0) //no more directories to go to
+	break;
+      inloc=search(fd,in,block_size,sb,bg,pieces); //find index of inode for directory
+      //printf("%d %s %s\n",inloc,pieces,fname);
+      if(inloc==0){
+	fprintf(stderr,"File %s not found\n",fcpy);
+	exit(0);
+      }
+      lseek(fd,(bg.bg_inode_table*block_size)+(inloc * sb.s_inode_size),SEEK_SET);
+      rv=read(fd,&in,sizeof(INODE));
+      if(rv!=sizeof(INODE)){
+	fprintf(stderr,"Bad inode read\n");
+	exit(0);
+      }
+      if(!(in.i_mode & EXT2_S_IFDIR)){
+	fprintf(stderr,"%s is not a directory\n",pieces);
+	exit(0);
+      }
+    }
+    inloc=search(fd,in,block_size,sb,bg,pieces);
+    // printf("%s\n",pieces);
+    if(inloc==0){
+      fprintf(stderr,"File \'%s\' not found\n",fcpy);
+      exit(0);
+    }
+    lseek(fd,(bg.bg_inode_table*block_size)+(inloc * sb.s_inode_size),SEEK_SET);
+    rv=read(fd,&in,sizeof(INODE));
+    if(rv!=sizeof(INODE)){
+      fprintf(stderr,"Bad inode read\n");
+      exit(0);
+    }
+    if(in.i_mode & EXT2_S_IFDIR) //just do ls
+      myls2(fd,in,block_size,sb,bg);
+    else if(in.i_mode & EXT2_S_IFREG){ //print file
+      //print_ino(fd,in,block_size);
+      return inloc;
+	}
+    //printf("%s\n",pieces);
+  }
+  else{//want to write --deal with later
+
+  }
+  return -1;
+}
+
+int ext2open(char *fname,int flags,int mode){
+  int fd=1;
+  int disp;
+  char pieces[K];
+  char path[K];
+  int rv;
+  SUPERBLOCK sb;
+  BGDT bg;
+  INODE root,in;
+  int block_size;
+  OPEN_STRUCT op;
+  int i;
+
+#ifndef INIT
+  #define INIT
+  for(i=0;i<10;i++){
+    fdar[i].fd=-1;
+  }
+#endif
+  
+  path[0]=0;
+
+  while(fd>0){
+    disp=split(fname,pieces);
+    if(disp<0)
+      break;
+    fname+=disp;
+  //printf("%s\n",fname);
+    if(!path[0]){
+      strcpy(path,pieces);
+    }
+    else
+      sprintf(path,"%s/%s",path,pieces);
+    fd=open(path,O_DIRECTORY);
+    close(fd);
+  }
+  // printf("%s ",path);
+  //printf("%s\n",fname);
+  /*if we're here - 1 of 3 things
+    1. succussfully got path to disk and path to file in disk
+    2. path stops at disk- got to where ther is no more '/'s
+    3. read invalid path*/
+
+  if(fd>0 && fname){
+    sprintf(path,"%s/%s",path,fname);
+    fname+=strlen(fname);
+    fname=".";
+  }
+  ///ready to read superblock, block group, etc.
+  //printf("%s ",path);
+  //printf("%s\n",fname);
+  fd=open(path,O_RDONLY);
+  lseek(fd,K,SEEK_SET);
+  rv=read(fd,&sb,sizeof(SUPERBLOCK));
+  if(rv!=sizeof(SUPERBLOCK)){
+    fprintf(stderr,"Bad superblock read\n");
+    exit(0);
+  }
+  block_size=K<<sb.s_log_block_size;
+  if(block_size>K)
+    lseek(fd,block_size,SEEK_SET);
+  rv=read(fd,&bg,sizeof(BGDT));
+  if(rv!=sizeof(BGDT)){
+    fprintf(stderr,"Bad block group descriptor table read\n");
+    exit(0);
+  }
+  lseek(fd,(block_size * bg.bg_inode_table)+(sb.s_inode_size),SEEK_SET);
+  rv=read(fd,&root,sizeof(INODE));
+  if(rv!=sizeof(INODE)){
+    fprintf(stderr,"Bad inode read\n");
+    exit(0);
+  }
+  //  myls2(fd,root,block_size,sb,bg);
+  for(i=0;i<10 && fdar[i].fd>=0;i++);
+  fdar[i].ino_index=myopen(fd,fname,root,flags,0,block_size,sb,bg);
+  fdar[i].sb=sb;
+  fdar[i].bg=bg;
+  fdar[i].fd=fd;
+  fdar[i].offset=0;
+  fdar[i].blocks[0]=op.blocks[1]=op.blocks[2]=op.blocks[3]=0;
+  fdar[i].blin=0;
+  
+  lseek(fd,(block_size*bg.bg_inode_table)+(fdar[i].ino_index*sb.s_inode_size),SEEK_SET);
+  rv=read(fd,&in,sizeof(INODE));
+  if(rv!=sizeof(INODE)){
+    fprintf(stderr,"Bad inode read\n");
+    exit(0);
+    }
+  fdar[i].inode=in;
+  return i;
+  close(fd);
+}
+
+int ext2read(int op,void *p,int size){//first version-assume char array
+  int block_size=1024<<fdar[op].sb.s_log_block_size;
+  int rv;
+  INODE in=fdar[op].inode;
+
+  /*lseek(fdar[op].fd,(block_size*fdar[op].bg.bg_inode_table)+(fdar[op].sb.s_inode_size*fdar[op].ino_index),SEEK_SET);
+  rv=read(fdar[op].fd,&in,sizeof(INODE));
+  if(rv!=sizeof(INODE)){
+    fprintf(stderr,"Bad inode read\n");
+    exit(0);
+    }*/
+  print_ino(fdar[op].fd,in,block_size);  
+  //int pos=0;
+  //int blocks[4]={0,0,0,0};
+  fdar[op].block=findblock(fdar[op].fd,in,fdar[op].blocks);
+  unsigned char c=1;
+  int bread=0;
+  lseek(fdar[op].fd,fdar[op].block * block_size,SEEK_SET);
+  printf("\n");
+  while(bread<=in.i_size && c && bread<size){
+    read(fdar[op].fd,&c,1);
+
+    fdar[op].offset++;
+    bread++;
+    printf("%c",c);
+    if((fdar[op].offset%block_size)==0 && fdar[op].offset!=0){
+      fdar[op].block=findblock(fdar[op].fd,in,fdar[op].blocks);
+      lseek(fdar[op].fd,fdar[op].block*block_size,SEEK_SET);
+      fdar[op].blin++;
+    }
+    }
+  printf("\n");
+  return bread;
+}
+
+int ext2seek(int fd, off_t offset, int whence){
+  int block_size=1024<<fdar[fd].sb.s_log_block_size;
+  //  int blocks[4]={0,0,0,0};
+  int pos,block;
+  int c=1;
+  fdar[fd].blocks[0]=fdar[fd].blocks[1]=fdar[fd].blocks[2]=fdar[fd].blocks[3]=0;
+  
+  lseek(fdar[fd].fd,fdar[fd].inode.i_block[0]*block_size,SEEK_SET);
+  if(whence==SEEK_SET){
+    fdar[fd].offset=offset;
+  }
+  else if(whence==SEEK_CUR){
+    fdar[fd].offset+=offset;
+  }
+  else if(whence==SEEK_END){
+    fdar[fd].offset=fdar[fd].inode.i_size-offset;
+  }
+  else{
+    fprintf(stderr,"Invalid whence for lseek used\n");
+    exit(0);
+  }
+  //go to offset or end of file
+  while(pos<fdar[fd].offset && pos<fdar[fd].inode.i_size && c){
+    c=read(fdar[fd].fd,&c,1);
+    pos++;
+    if(!(pos%block_size) && pos){
+      
+    }
+  }
+}
+
+int ext2close(int op){
+  close(fdar[op].fd);
+  fdar[op].fd=-1;
+  //fdar[op].sb;   
+  //fdar[op].bg;   
+  fdar[op].ino_index=0;
+  //fdar[op].inode;
+  fdar[op].offset=0;            
+  fdar[op].blin=0;
+  fdar[op].blocks[0]=fdar[op].blocks[1]=fdar[op].blocks[2]=fdar[op].blocks[3]=0;
+  fdar[op].block=0;
+}

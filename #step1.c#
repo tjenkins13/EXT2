@@ -1,0 +1,150 @@
+/*
+Author: Tyler Jenkins
+Date: 10/9/17
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <time.h>
+
+typedef struct __attribute__((packed)) {
+    unsigned int        s_inodes_count;
+    unsigned int        s_blocks_count;
+    unsigned int        s_r_blocks_count;
+    unsigned int        s_free_blocks_count;
+    unsigned int        s_free_inodes_count;
+    unsigned int        s_first_data_block;
+    unsigned int        s_log_block_size;
+    unsigned int        s_log_frag_size;
+    unsigned int        s_blocks_per_group;
+    unsigned int        s_frags_per_group;
+    unsigned int        s_inodes_per_group;
+    unsigned int        s_mtime;
+    unsigned int        s_wtime;
+    unsigned short        s_mnt_count;
+    unsigned short        s_max_mnt_count;
+    unsigned short        s_magic;
+    unsigned short        s_state;
+    unsigned short        s_errors;
+    unsigned short        s_minor_rev_level;
+    unsigned int        s_lastcheck;
+    unsigned int        s_checkinterval;
+    unsigned int        s_creator_os;
+    unsigned int        s_rev_level;
+    unsigned short        s_def_resuid;
+    unsigned short        s_def_resgid;
+    unsigned int        s_first_ino;
+    unsigned short        s_inode_size;
+    unsigned short        s_block_group_nr;
+    unsigned int        s_feature_compat;
+    unsigned int        s_feature_incompat;
+    unsigned int        s_feature_ro_compat;
+    char      s_uuid[16];
+    char      s_volume_name[16];
+    char      s_last_mounted[64];
+    char      unused[824];
+}SUPERBLOCK;
+
+typedef struct __attribute__((packed)) {
+  unsigned int bg_block_bitmap;
+  unsigned int bg_inode_bitmap;
+  unsigned int bg_inode_table;
+  unsigned short bg_free_blocks_count;
+  unsigned short bg_free_inodes_count;
+  unsigned short bg_used_dirs_count;
+  unsigned short bg_pad;
+  unsigned char bg_reserved[12];
+} BGDT;
+
+typedef struct __attribute__((packed)) {
+  unsigned short i_mode;
+  unsigned short i_uid;
+  unsigned int i_size;
+  unsigned int i_atime;
+  unsigned int i_ctime;
+  unsigned int i_mtime;
+  unsigned int i_dtime;
+  unsigned short i_gid;
+  unsigned short i_links_count;
+  unsigned int i_blocks;
+  unsigned int i_flags;
+  unsigned int _i_osd1;
+  unsigned int i_block[15];
+  unsigned int i_generation;
+  unsigned int i_file_acl;
+  unsigned int i_dir_acl;
+  unsigned int i_faddr;
+  unsigned char i_osd2[12]; //don't feel like using i_osd2 struct
+} INODE;
+
+typedef struct __attribute__((packed)) {
+  unsigned int inode;
+  unsigned short rec_len;
+  unsigned char name_len;
+  unsigned char file_type;
+  unsigned char name[255];
+} DIR_STRUCT;
+
+int main()
+{
+   int fd;
+   int rv;
+   SUPERBLOCK sb;
+   BGDT bg;
+   INODE in;
+   DIR_STRUCT dir;
+   time_t t;
+   struct tm *tp;   // time pointer
+   int i;
+   
+   //fprintf(stderr,"sizeof superblock = %ld\n", sizeof(SUPERBLOCK));
+   fd = open("/u1/junk/cs471/oct02/disk", O_RDONLY);
+   if(fd < 0){
+     fprintf(stderr,"cannot open disk\n");
+     exit(0);
+   }
+   lseek(fd,1024,SEEK_SET);
+   rv = read(fd, &sb, sizeof(SUPERBLOCK));  
+   if(rv != sizeof(SUPERBLOCK)){
+     fprintf(stderr,"bad superblock read\n");
+     exit(0);
+   }
+   printf("%d\n",sb.s_inode_size);
+   t = sb.s_wtime;
+
+   rv = read(fd, &bg, sizeof(BGDT));  
+   if(rv != sizeof(BGDT)){
+     fprintf(stderr,"bad block group read\n");
+     exit(0);
+   }
+
+   printf("%d\n",bg.bg_inode_table);
+
+   lseek(fd,(1024*(bg.bg_inode_table-3))+(1024-sizeof(BGDT)),SEEK_SET);
+   //lseek(fd,(1024*(bg.bg_inode_table))+(1024-sizeof(BGDT)),SEEK_SET);
+   lseek(fd,sizeof(INODE)*(sb.s_first_ino-1),SEEK_SET);
+   
+   rv = read(fd, &in, sizeof(DIR_STRUCT));  
+   if(rv != sizeof(DIR_STRUCT)){
+     fprintf(stderr,"bad directory read\n");
+     exit(0);
+   }
+
+   // for(i=0;i<255;i++)
+   printf("%s \n",dir.name);
+   
+   // printf("%ld\n", t);
+   tp = localtime(&t);
+   if(tp == NULL){
+     fprintf(stderr,"bad localtime call\n");
+     exit(0);
+   }
+   //  printf("%d %d %d %d\n", tp->tm_year, tp->tm_mon, tp->tm_mday, tp->tm_hour);
+   close(fd);
+}

@@ -1,0 +1,60 @@
+/*
+Author: Tyler Jenkins
+Date: 10/16/17
+ */
+
+#include "ext2.h"
+
+int main(int argc,char **argv)
+{
+   int fd;
+   int rv;
+   SUPERBLOCK sb;
+   BGDT bg;
+   INODE in;
+   DIR_STRUCT dir;
+   time_t t;
+   struct tm *tp;   // time pointer
+   int i;
+   unsigned char inode_bitmap[K];
+   
+   if(argc<2){
+     fprintf(stderr,"usage: %s <disk>\n",argv[0]);
+     exit(1);
+   }
+   
+   //fprintf(stderr,"sizeof superblock = %ld\n", sizeof(SUPERBLOCK));
+   fd = open(argv[1], O_RDONLY);
+   if(fd < 0){
+     fprintf(stderr,"cannot open %s\n",argv[1]);
+     exit(0);
+   }
+   lseek(fd,K,SEEK_SET); //go to second block- where superblock is
+   rv = read(fd, &sb, sizeof(SUPERBLOCK));  //read superblock
+   if(rv != sizeof(SUPERBLOCK)){
+     fprintf(stderr,"bad superblock read\n");
+     exit(0);
+   }
+
+   rv = read(fd, &bg, sizeof(BGDT));  //read block group descriptor table
+   if(rv != sizeof(BGDT)){
+     fprintf(stderr,"bad block group read\n");
+     exit(0);
+   }
+
+   lseek(fd,K*bg.bg_inode_bitmap,SEEK_SET); //go to where inode bitmap is
+
+   rv=read(fd,&inode_bitmap,sb.s_inodes_count);
+   if(rv!=sb.s_inodes_count){
+     fprintf(stderr,"bad inode table read\n");
+     exit(0);
+   }
+
+   for(i=0;i<sb.s_inodes_count;i++){
+     if((inode_bitmap[i/8] & (1<<(i%8)))>0) //print inode number if it is used
+       printf("%d\n",i);
+       //     printf("%d: %d\n",i,((inode_bitmap[i/8] & 1<<(i%8))==0) ? 0: 1);
+   }
+   
+   close(fd);
+}
